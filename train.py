@@ -158,8 +158,9 @@ if __name__ == '__main__':
     val_df = df.loc[df.patient_id.isin(val_ids), :].copy()
 
     train_transforms = transforms.Compose([
-        transforms.RandomAdjustSharpness(sharpness_factor=2),
-        transforms.RandomAutocontrast(),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomVerticalFlip(),
+        transforms.RandomRotation(180),
         transforms.ToTensor()])
 
     val_transforms = transforms.Compose([transforms.ToTensor()])
@@ -182,13 +183,14 @@ if __name__ == '__main__':
         pin_memory=True)
 
     # model = CustomModel()
-    model = torchvision.models.resnet18(pretrained=True)
-    # model = torchvision.models.inception_v3(pr)
+    # model = torchvision.models.efficientnet_v2_m(pretrained=True)
+    model = torchvision.models.inception_v3(pretrained=True)
 
-    # model.classifier.fc = nn.Sequential(
+    # model.classifier = nn.Sequential(
     model.fc = nn.Sequential(
         nn.Dropout(0.5),
         nn.Linear(model.fc.in_features, 1024),
+        # nn.Linear(1280, 1024),
         nn.Dropout(0.2),
         nn.Linear(1024, 512),
         nn.Dropout(0.1),

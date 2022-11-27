@@ -71,8 +71,13 @@ class CustomModel(nn.Module):
 
 
 if __name__ == '__main__':
-    csv_file = r'D:\jaehwan\98.dacon\mammography\csv\test.csv'
-    df = pd.read_csv(csv_file, encoding_errors='ignore')
+
+    csv_file = r'/mammography/csv/test.csv'
+    df = pd.read_csv(csv_file, encoding='cp949')
+    # set nan or 0 data
+    df['암의 장경'] = df['암의 장경'].fillna(df['암의 장경'].mean())
+    test = df.fillna(0)
+
     id = df.iloc[:, 0].values
     imgs_path = df.iloc[:, 1].values
     label = df.iloc[:, -1].values
@@ -100,11 +105,15 @@ if __name__ == '__main__':
         shuffle=False,
         pin_memory=True)
 
-    model = torchvision.models.resnet18(pretrained=True)
-    # model.classifier.fc = nn.Sequential(
-    model.fc = nn.Sequential(
+    # model = CustomModel()
+    model = torchvision.models.efficientnet_v2_m(pretrained=True)
+    # model = torchvision.models.inception_v3(pr)
+
+    model.classifier = nn.Sequential(
+    # model.fc = nn.Sequential(
         nn.Dropout(0.5),
-        nn.Linear(model.fc.in_features, 1024),
+        # nn.Linear(model.fc.in_features, 1024),
+        nn.Linear(1280, 1024),
         nn.Dropout(0.2),
         nn.Linear(1024, 512),
         nn.Dropout(0.1),
@@ -117,8 +126,9 @@ if __name__ == '__main__':
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-5)
     # trained_model = r'D:\jaehwan\98.dacon\mammography\src\workspace\model\checkpoints\best_effcientnet_3_epoch_train_loss_0.656_train_acc_0.637_val_loss_0.654_val_acc_0.675.pth'
     trained_model = r'D:\jaehwan\98.dacon\mammography\src\workspace\model\checkpoints\best_effcientnet_15_epoch_train_loss_0.564_train_acc_0.848_val_loss_0.640_val_acc_0.692.pth'
-    trained_model =r'D:\jaehwan\98.dacon\mammography\src\workspace\model\checkpoints\best_effcientnet_26_epoch_train_loss_0.523_train_acc_0.945_val_loss_0.661_val_acc_0.700.pth'
+    trained_model =r'D:\jaehwan\98.dacon\mammography\src\workspace\model\checkpoints\best_effcientnet_87_epoch_train_loss_0.527_train_acc_0.927_val_loss_0.646_val_acc_0.705.pth'
     model.load_state_dict(torch.load(trained_model), strict=False)
+
 
     ## TODO: INFERENCE
 
@@ -126,7 +136,7 @@ if __name__ == '__main__':
 
     ## TODO: SUBMISSON
 
-    submit = pd.read_csv(r'D:\jaehwan\98.dacon\mammography\csv\submit.csv')
+    submit = pd.read_csv(r'/mammography/csv/submit.csv')
     submit['N_category'] = preds
     submit.to_csv(r'D:\jaehwan\98.dacon\mammography\src\workspace\result\submit.csv', index=False)
 

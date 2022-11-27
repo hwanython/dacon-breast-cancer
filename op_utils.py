@@ -1,5 +1,6 @@
 import tqdm
 import torch
+import torch.optim as optim
 from metric import AverageMeter
 import time
 from tqdm import tqdm
@@ -42,6 +43,8 @@ def train_loop(train_loader, model, criterion, optimizer, epoch, device):
         loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=50, eta_min=0)
+        scheduler.step()
         #
         # # SAM optimizer
         # optimizer.first_step(zero_grad=True)
@@ -151,8 +154,8 @@ def inference(val_loader, model, device):
             # validation operation
             outputs = model(inputs)
             pred = outputs
-            pred[pred >= 0.5] = 1
-            pred[pred < 0.5] = 0
+            pred[pred >= 0.8] = 1
+            pred[pred < 0.2] = 0
 
             # recording running metric
 
