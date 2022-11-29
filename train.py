@@ -1,99 +1,21 @@
-import os
-import torch
-import cv2
 import pandas as pd
-import matplotlib.pyplot as plt
-import timm
 import numpy as np
-import seaborn as sns
-
-sns.set()
 import warnings
-
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
 import torch
 import torch.nn as nn
 import torch.optim
-from torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR, CyclicLR
-import torchvision
 from torchvision import datasets, models, transforms
-from torch.utils.data import Dataset, DataLoader
-import torch.nn.functional as F
-
+from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.model_selection import train_test_split, StratifiedKFold
-from sklearn.utils.class_weight import compute_class_weight
-
-from glob import glob
-from skimage.io import imread
-from os import listdir
-
-import time
-import copy
-from tqdm import tqdm_notebook as tqdm
-from efficientnet_pytorch import EfficientNet
 from data_loader import CustomDataset
+from torch.utils.data import DataLoader
 from op_utils import train_loop, val_loop
 
-
-class SAM(torch.optim.Optimizer):
-    def __init__(self, params, base_optimizer, rho=0.05, **kwargs):
-        assert rho >= 0.0, f"Invalid rho, should be non-negative: {rho}"
-
-        defaults = dict(rho=rho, **kwargs)
-        super(SAM, self).__init__(params, defaults)
-
-        self.base_optimizer = base_optimizer(self.param_groups, **kwargs)
-        self.param_groups = self.base_optimizer.param_groups
-
-    @torch.no_grad()
-    def first_step(self, zero_grad=False):
-        grad_norm = self._grad_norm()
-        for group in self.param_groups:
-            scale = group["rho"] / (grad_norm + 1e-12)
-
-            for p in group["params"]:
-                if p.grad is None: continue
-                e_w = p.grad * scale.to(p)
-                p.add_(e_w)  # climb to the local maximum "w + e(w)"
-                self.state[p]["e_w"] = e_w
-
-        if zero_grad: self.zero_grad()
-
-    @torch.no_grad()
-    def second_step(self, zero_grad=False):
-        for group in self.param_groups:
-            for p in group["params"]:
-                if p.grad is None: continue
-                p.sub_(self.state[p]["e_w"])  # get back to "w" from "w + e(w)"
-
-        self.base_optimizer.step()  # do the actual "sharpness-aware" update
-
-        if zero_grad: self.zero_grad()
-
-    @torch.no_grad()
-    def step(self, closure=None):
-        assert closure is not None, "Sharpness Aware Minimization requires closure, but it was not provided"
-        closure = torch.enable_grad()(closure)  # the closure should do a full forward-backward pass
-
-        self.first_step(zero_grad=True)
-        closure()
-        self.second_step()
-
-    def _grad_norm(self):
-        shared_device = self.param_groups[0]["params"][
-            0].device  # put everything on the same device, in case of model parallelism
-        norm = torch.norm(
-            torch.stack([
-                p.grad.norm(p=2).to(shared_device)
-                for group in self.param_groups for p in group["params"]
-                if p.grad is not None
-            ]),
-            p=2
-        )
-        return norm
-
+def get_values(value):
+    return value.values.reshape(-1, 1)
 
 def f1_score(preds, targets):
     tp = (preds * targets).sum().to(torch.float32)
@@ -108,38 +30,71 @@ def f1_score(preds, targets):
     return f1_score
 
 
-def init_weights(m):
-    if type(m) == nn.Linear:
-        torch.nn.init.xavier_uniform_(m.weight)
-        m.bias.data.fill_(0.01)
-
-
-class CustomModel(nn.Module):
+class CNNmodel(nn.Module):
     def __init__(self):
-        super(CustomModel, self).__init__()
-        self.resnetmodel = EfficientNet.from_pretrained('efficientnet-b7')
-
-        self.fc = nn.Sequential(nn.Dropout(0.5),
-                                nn.Linear(1000, 1024), nn.ReLU(),
-                                nn.Dropout(0.2),
-                                nn.Linear(1024, 512),
-                                nn.Dropout(0.1),
-                                nn.Linear(512, 1),
-                                nn.Sigmoid())
+        super(CNNmodel, self).__init__()
+        # self.efficientnet = torchvision.models.efficientnet_v2_m(pretrained=True)
+        self.backbone = models.efficientnet_b0(pretrained=True)
+        self.embedding = nn.Linear(1000, 512)
 
     def forward(self, x):
-        x = self.resnetmodel(x)
-        return self.fc(x)
+        x = self.backbone(x)
+        x = self.embedding(x)
+        return x
+
+
+class TabularFeatureExtractor(nn.Module):
+    def __init__(self):
+        super(TabularFeatureExtractor, self).__init__()
+        self.embedding = nn.Sequential(
+            nn.Linear(in_features=23, out_features=128),
+            nn.BatchNorm1d(128),
+            nn.LeakyReLU(),
+            nn.Linear(in_features=128, out_features=256),
+            nn.BatchNorm1d(256),
+            nn.LeakyReLU(),
+            nn.Linear(in_features=256, out_features=512),
+            nn.BatchNorm1d(512),
+            nn.LeakyReLU(),
+            nn.Linear(in_features=512, out_features=512)
+        )
+
+    def forward(self, x):
+        x = self.embedding(x)
+        return x
+
+
+class ClassificationModel(nn.Module):
+    def __init__(self):
+        super(ClassificationModel, self).__init__()
+        self.img_feature_extractor = CNNmodel()
+        self.tabular_feature_extractor = TabularFeatureExtractor()
+        self.classifier = nn.Sequential(
+            nn.Linear(in_features=1024, out_features=1),
+            nn.Sigmoid(),
+        )
+        # self.classifier = nn.Sequential(nn.Dropout(0.5),
+        #                         nn.Linear(1024, 1024), nn.ReLU(),
+        #                         nn.Dropout(0.2),
+        #                         nn.Linear(1024, 512),
+        #                         nn.Dropout(0.1),
+        #                         nn.Linear(512, 1),
+        #                         nn.Sigmoid())
+
+    def forward(self, img, tabular):
+        img_feature = self.img_feature_extractor(img)
+        tabular_feature = self.tabular_feature_extractor(tabular)
+        feature = torch.cat([img_feature, tabular_feature], dim=-1)
+        output = self.classifier(feature)
+        return output
 
 
 if __name__ == '__main__':
     csv_file = r'D:\jaehwan\98.dacon\mammography\csv\train.csv'
-    df = pd.read_csv(csv_file, encoding_errors='ignore')
-    id = df.iloc[:, 0].values
-    imgs_path = df.iloc[:, 1].values
-    label = df.iloc[:, -1].values
-    df = pd.DataFrame([x for x in zip(id.tolist(), imgs_path.tolist(), label.tolist())],
-                      columns=["patient_id", "path", "labels"])
+    df = pd.read_csv(csv_file, encoding='cp949')
+    df['암의 장경'] = df['암의 장경'].fillna(df['암의 장경'].mean())
+    df = df.fillna(0)
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     BATCH_SIZE = 8
@@ -149,13 +104,28 @@ if __name__ == '__main__':
     torch.manual_seed(0)
     np.random.seed(0)
 
-    patients = df.patient_id.unique()
+    patients = df.ID.unique()
     train_ids, val_ids = train_test_split(patients,
                                           test_size=0.4,
                                           random_state=0)
 
-    train_df = df.loc[df.patient_id.isin(train_ids), :].copy()
-    val_df = df.loc[df.patient_id.isin(val_ids), :].copy()
+    train_df = df.loc[df.ID.isin(train_ids), :].copy()
+    val_df = df.loc[df.ID.isin(val_ids), :].copy()
+
+    numeric_cols = ['나이', '암의 장경', 'ER_Allred_score', 'PR_Allred_score', 'KI-67_LI_percent', 'HER2_SISH_ratio']
+    ignore_cols = ['ID', 'img_path', 'mask_path', '수술연월일', 'N_category']
+
+    for col in train_df.columns:
+        if col in ignore_cols:
+            continue
+        if col in numeric_cols:
+            scaler = StandardScaler()
+            train_df[col] = scaler.fit_transform(get_values(train_df[col]))
+            val_df[col] = scaler.transform(get_values(val_df[col]))
+        else:
+            le = LabelEncoder()
+            train_df[col] = le.fit_transform(get_values(train_df[col]))
+            val_df[col] = le.transform(get_values(val_df[col]))
 
     train_transforms = transforms.Compose([
         transforms.RandomHorizontalFlip(),
@@ -171,36 +141,23 @@ if __name__ == '__main__':
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=BATCH_SIZE,
-        num_workers=1,
+        num_workers=0,
         shuffle=True,
         pin_memory=True)
 
     val_dataloader = DataLoader(
         val_dataset,
         batch_size=BATCH_SIZE,
-        num_workers=1,
+        num_workers=0,
         shuffle=False,
         pin_memory=True)
 
-    # model = CustomModel()
-    # model = torchvision.models.efficientnet_v2_m(pretrained=True)
-    model = torchvision.models.inception_v3(pretrained=True)
-
-    # model.classifier = nn.Sequential(
-    model.fc = nn.Sequential(
-        nn.Dropout(0.5),
-        nn.Linear(model.fc.in_features, 1024),
-        # nn.Linear(1280, 1024),
-        nn.Dropout(0.2),
-        nn.Linear(1024, 512),
-        nn.Dropout(0.1),
-        nn.Linear(512, 1),
-        nn.Sigmoid()
-    )
-
+    model = nn.DataParallel(ClassificationModel())
+    # model = torchvision.models.inception_v3(pretrained=True)
     model = model.to(device)
+    # model.eval()
     # criterion = nn.BCELoss()
-    criterion = nn.BCEWithLogitsLoss()
+    criterion = nn.BCEWithLogitsLoss().to(device)
     # base_optimizer = torch.optim.SGD
     # optimizer = SAM(model.parameters(), base_optimizer, lr=0.01, momentum=0.9)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-5)

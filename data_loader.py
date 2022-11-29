@@ -3,6 +3,7 @@ import torch
 from torch.utils.data import Dataset
 from PIL import Image
 
+
 class CustomDataset(Dataset):
     def __init__(self, df, mode='train', transform=None):
         self.states = df
@@ -13,10 +14,15 @@ class CustomDataset(Dataset):
         return len(self.states)
 
     def __getitem__(self, idx):
-        patient_id = self.states.iloc[:, 0].values[idx]
-        img_path = self.states.iloc[:, 1].values[idx]
-        label = self.states.iloc[:, 2].values[idx]
-
+        if self.mode == 'train':
+            img_path = self.states['img_path'].values[idx]
+            label = self.states['N_category'].values[idx]
+            tabular = torch.Tensor(
+                self.states.drop(columns=['ID', 'img_path', 'mask_path', '수술연월일', 'N_category']).iloc[idx])
+        else:
+            img_path = self.states['img_path'].values[idx]
+            tabular = torch.Tensor(
+                self.states.drop(columns=['ID', 'img_path', '수술연월일']).iloc[idx])
 
         img = np.load(img_path)
         img = Image.fromarray(img)
@@ -25,9 +31,7 @@ class CustomDataset(Dataset):
             img = self.transform(img)
 
         if self.mode == 'train':
-            # img = torch.from_numpy(img).float()
-            # label = torch.from_numpy(label).long()
             label = np.array([label])
-            return img, label
+            return img, label, tabular
         else:
-            return img, img_path
+            return img, tabular

@@ -5,7 +5,8 @@ from metric import AverageMeter
 import time
 from tqdm import tqdm
 import numpy as np
-
+import xgboost as xgb
+import pickle
 
 def train_loop(train_loader, model, criterion, optimizer, epoch, device):
     """
@@ -31,15 +32,16 @@ def train_loop(train_loader, model, criterion, optimizer, epoch, device):
 
     model.train()
     tbar = tqdm(train_loader, ncols=130)
-    for idx, (inputs, labels) in enumerate(tbar):
+    for idx, (inputs, labels, tabular) in enumerate(tbar):
         data_time.update(time.time() - tic)
         if device == 'cuda':
             inputs = inputs.cuda()
             labels = labels.cuda().float()
+            tabular = tabular.cuda().float()
 
         # train operation
         optimizer.zero_grad()
-        outputs = model(inputs)
+        outputs = model(inputs, tabular)
         loss = criterion(outputs, labels)
         loss.backward()
         optimizer.step()
@@ -96,14 +98,15 @@ def val_loop(val_loader, model, criterion, epoch, device):
     model.eval()
     with torch.no_grad():
         tbar = tqdm(val_loader, ncols=130)
-        for idx, (inputs, labels) in enumerate(tbar):
+        for idx, (inputs, labels, tabular) in enumerate(tbar):
             data_time.update(time.time() - tic)
             if device == 'cuda':
                 inputs = inputs.cuda()
                 labels = labels.cuda().float()
+                tabular = tabular.cuda().float()
 
             # validation operation
-            outputs = model(inputs)
+            outputs = model(inputs, tabular)
             loss = criterion(outputs, labels)
             pred = outputs
             pred[pred >= 0.5] = 1
@@ -147,15 +150,18 @@ def inference(val_loader, model, device):
     model.eval()
     with torch.no_grad():
         tbar = tqdm(val_loader, ncols=130)
-        for idx, (inputs, _) in enumerate(tbar):
+        for idx, (inputs, tabular) in enumerate(tbar):
             data_time.update(time.time() - tic)
             if device == 'cuda':
                 inputs = inputs.cuda()
+                tabular = tabular.cuda().float()
+
             # validation operation
-            outputs = model(inputs)
+            outputs = model(inputs, tabular)
             pred = outputs
-            pred[pred >= 0.8] = 1
-            pred[pred < 0.2] = 0
+            pred[pred >= 0.5] = 1
+            pred[pred < 0.5] = 0
+
 
             # recording running metric
 
@@ -164,4 +170,4 @@ def inference(val_loader, model, device):
             tbar.set_description('PRED B {:.2f} D {:.2f} |'.format(batch_time.average, data_time.average))
             preds.extend(pred.cpu().detach().numpy())
 
-    return np.array(preds, dtype=np.int).flatten()
+    return np.array(preds, dtype=np.float16).flatten()
